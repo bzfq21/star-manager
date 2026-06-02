@@ -1,0 +1,50 @@
+name: Organize Stars
+
+on:
+  schedule:
+    # Weekly: Sunday 2am UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      force_reclassify:
+        description: 'Reclassify all repos (not just new ones)'
+        type: boolean
+        default: false
+        required: false
+
+# Required secret: STAR_MANAGER_PAT - GitHub PAT with 'repo' and 'user' scopes
+
+jobs:
+  organize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Run star manager
+        env:
+          GH_TOKEN: ${{ secrets.STAR_MANAGER_PAT }}
+          FORCE_RECLASSIFY: ${{ inputs.force_reclassify || 'false' }}
+        run: python scripts/star_manager.py
+
+      - name: Commit state update
+        env:
+          GH_TOKEN: ${{ secrets.STAR_MANAGER_PAT }}
+        run: |
+          CONTENT=$(base64 -w0 scripts/state.json)
+          SHA=$(gh api repos/bzfq21/star-manager/contents/scripts/state.json --jq '.sha' 2>/dev/null || echo "")
+          if [ -n "$SHA" ]; then
+            gh api repos/bzfq21/star-manager/contents/scripts/state.json \
+              -X PUT \
+              -f message="chore: update star manager state [skip ci]" \
+              -f content="$CONTENT" \
+              -f sha="$SHA"
+          else
+            gh api repos/bzfq21/star-manager/contents/scripts/state.json \
+              -X PUT \
+              -f message="chore: update star manager state [skip ci]" \
+              -f content="$CONTENT"
+          fi
