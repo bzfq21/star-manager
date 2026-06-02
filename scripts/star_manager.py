@@ -277,7 +277,18 @@ def main():
         log(f"New repos since {last_starred}: {len(new_repos)}")
 
     if not new_repos and not force:
-        log("No new repos. Nothing to do.")
+        new_state = {
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "last_starred_at": max(r["starred_at"] for r in all_repos),
+            "processed_repos": len(all_repos),
+            "last_push": {
+                "total": 0,
+                "ok": 0,
+                "err": 0,
+            }
+        }
+        save_state(new_state)
+        log("No new repos. State refreshed.")
         return
 
     # Classify new repos
