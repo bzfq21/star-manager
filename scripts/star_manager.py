@@ -121,7 +121,11 @@ def classify(repo_name, description="", topics=""):
 
 
 def get_starred_repos(after=None, accumulated=None):
-    """Fetch all starred repos with pagination via GraphQL."""
+    """Fetch all starred repos with pagination via GraphQL.
+
+    Raises RuntimeError if any page fails so callers never save state from a
+    partial fetch.
+    """
     if accumulated is None:
         accumulated = []
 
@@ -150,7 +154,7 @@ def get_starred_repos(after=None, accumulated=None):
     """
     result = run_graphql(query)
     if not result:
-        return accumulated, None, 0
+        raise RuntimeError(f"Failed to fetch starred repositories page after={after!r}")
 
     starred = result["data"]["viewer"]["starredRepositories"]
     total = starred["totalCount"]
@@ -260,6 +264,8 @@ def main():
     log("Fetching starred repos from GitHub...")
     all_repos, _, total = get_starred_repos()
     log(f"Fetched {len(all_repos)}/{total} repos")
+    if len(all_repos) != total:
+        raise RuntimeError(f"Incomplete starred repository fetch: got {len(all_repos)} of {total}")
 
     # Identify new repos
     last_starred = state.get("last_starred_at")
