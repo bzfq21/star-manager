@@ -24,23 +24,30 @@ def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}")
 
+def parse_ts(s):
+    """Parse GitHub ISO 8601 timestamp string to timezone-aware datetime."""
+    if s.endswith("Z"):
+        return datetime.fromisoformat(s[:-1] + "+00:00")
+    return datetime.fromisoformat(s)
+
 def run_graphql(query, label=""):
     """Run a GraphQL query/mutation."""
+    prefix = f"[{label}] " if label else ""
     try:
         r = subprocess.run(
             GH + ["-f", f"query={query}"],
             capture_output=True, text=True, timeout=120
         )
         if r.returncode != 0:
-            log(f"gh error: {r.stderr[:200]}")
+            log(f"{prefix}gh exited {r.returncode}: {r.stderr[:300]}")
             return None
         d = json.loads(r.stdout)
         if "errors" in d:
-            log(f"GraphQL errors: {d['errors']}")
+            log(f"{prefix}GraphQL errors: {d['errors']}")
             return None
         return d
     except Exception as e:
-        log(f"Exception: {e}")
+        log(f"{prefix}Exception: {e}")
         return None
 
 # ── Load rules ──
@@ -273,13 +280,13 @@ def main():
         new_repos = all_repos
         log(f"Processing ALL {len(new_repos)} repos")
     else:
-        new_repos = [r for r in all_repos if r["starred_at"] > last_starred]
+        new_repos = [r for r in all_repos if parse_ts(r["starred_at"]) > parse_ts(last_starred)]
         log(f"New repos since {last_starred}: {len(new_repos)}")
 
     if not new_repos and not force:
         new_state = {
             "last_run": datetime.now(timezone.utc).isoformat(),
-            "last_starred_at": max(r["starred_at"] for r in all_repos),
+            "last_starred_at": max(parse_ts(r["starred_at"]) for r in all_repos).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "processed_repos": len(all_repos),
             "last_push": {
                 "total": 0,
@@ -291,14 +298,12 @@ def main():
         log("No new repos. State refreshed.")
         return
 
-    # Classify new repos
-    log("Classifying repos...")
-    repo_id_map = {}
-    for repo in all_repos:
-        repo_id_map[repo["name"]] = repo["id"]
+    # Classify repos (all repos in force mode, only new repos in incremental mode)
+    log(f"{'Force reclassifying ALL repos' if force else 'Classifying new repos'}...")
+    repos_to_classify = all_repos if force else new_repos
 
     classified = []
-    for repo in new_repos:
+    for repo in repos_to_classify:
         topics_str = " ".join(repo["topics"])
         cats = classify(repo["name"], repo["description"], topics_str)
         repo["categories"] = cats
@@ -319,19 +324,7 @@ def main():
     log(f"  唯一标签 (其他领域): {unlabeled}")
     log(f"  多标签率: {sum(v for v in cat_counts.values()) / max(len(classified), 1):.1f}x")
 
-    # If force mode, we need to push ALL repos (not just new) to overwrite
-    if force:
-        # Re-classify ALL repos
-        log("Force mode: reclassifying ALL repos...")
-        all_classified = []
-        for repo in all_repos:
-            topics_str = " ".join(repo["topics"])
-            repo["categories"] = classify(repo["name"], repo["description"], topics_str)
-            all_classified.append(repo)
-        to_push = all_classified
-    else:
-        # Only push new repos (they'll be added to lists alongside existing assignments)
-        to_push = classified
+    to_push = classified
 
     # Push to GitHub Lists
     list_map = get_list_id_map()
@@ -345,13 +338,15 @@ def main():
     if missing_lists:
         log(f"MISSING LISTS: {missing_lists}")
         log("Create these lists manually or add them to rules.json")
-        # Remove repos with missing categories
-        to_push = [r for r in to_push if not missing_lists.intersection(r["categories"])]
+        # Filter out missing categories per repo, then drop repos with none left
+        for repo in to_push:
+            repo["categories"] = [c for c in repo["categories"] if c in list_map]
+        to_push = [r for r in to_push if r["categories"]]
 
     ok, err = push_to_lists(to_push, list_map)
 
     # Update state
-    max_starred = max(r["starred_at"] for r in all_repos)
+    max_starred = max(parse_ts(r["starred_at"]) for r in all_repos).strftime("%Y-%m-%dT%H:%M:%SZ")
     new_state = {
         "last_run": datetime.now(timezone.utc).isoformat(),
         "last_starred_at": max_starred,
